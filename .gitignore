@@ -1,0 +1,5 @@
+config.py
+/venv
+*.log
+safe_forward_session_v2.session
+/__pycache__
