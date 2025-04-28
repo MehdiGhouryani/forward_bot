@@ -8,7 +8,7 @@ if __name__ == "__main__":
         # شروع ربات
         asyncio.run(run_bot())
     except KeyboardInterrupt:
-        # در صورتی که ربات توسط کاربر متوقف شود
+        # در صورتی که ربات توسط کاربر متوقف شودx    
         logging.info("Bot stopped by user")
     except Exception as e:
         # در صورتی که خطای غیرمنتظره‌ای رخ دهد

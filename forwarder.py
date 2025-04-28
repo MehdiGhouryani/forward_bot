@@ -1,5 +1,14 @@
 
-# forwarder.py
+from telethon.tl.types import (
+    MessageEntityTextUrl,
+    MessageEntityUrl,
+    MessageEntityBold,
+    MessageEntityItalic,
+    MessageEntityCode,
+    MessageEntityPre,
+    MessageEntityStrike,
+    MessageEntityUnderline,
+)
 
 import asyncio
 import time
@@ -7,7 +16,6 @@ import random
 import logging
 from telethon import TelegramClient, events, Button
 from telethon.errors import FloodWaitError, ChatWriteForbiddenError, UserIsBlockedError, SessionPasswordNeededError, PhoneNumberBannedError
-from telethon.types import MessageEntityTextUrl
 from config import *
 
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', encoding='utf-8')
@@ -75,68 +83,98 @@ async def new_message_handler(event):
         logging.warning("Rate limit reached, message skipped")
 
 async def message_sender():
+    """Consumes messages from the queue and sends them to the target channel with retries."""
     while True:
+        # گرفتن پیام، مدیا و انتیتی‌ها از صف
         message_text, message_media, message_entities = await message_queue.get()
         send_successful = False
         attempts = 0
-        filtered_entities = [e for e in message_entities if isinstance(e, MessageEntityTextUrl)]
-        buttons = [Button.url("Get VIP Crypto Analysis", VIP_LINK)]
+        
+        # فیلتر کردن و انتخاب فقط انتیتی‌های مربوط به فرمت‌بندی و لینک‌ها
+        relevant_entities = []
+        if message_entities: # بررسی وجود انتیتی
+            for e in message_entities:
+                # انتخاب انواع انتیتی‌های رایج و مرتبط
+                if isinstance(e, (
+                    MessageEntityTextUrl, # لینک‌های درون متنی
+                    MessageEntityUrl,     # لینک‌های تشخیص داده شده
+                    MessageEntityBold,    # متن ضخیم
+                    MessageEntityItalic,  # متن کج
+                    MessageEntityCode,    # کد درون خطی
+                    MessageEntityPre,     # بلوک کد
+                    MessageEntityStrike,  # خط خورده
+                    MessageEntityUnderline, # زیر خط دار
+                    # اگر می‌خواهید منشن‌ها یا هشتگ‌ها را هم حفظ کنید، این خطوط را فعال کنید:
+                    # MessageEntityMention,
+                    # MessageEntityHashtag,
+                )):
+                    relevant_entities.append(e)
+        
+        # استفاده از لیست فیلتر شده انتیتی‌ها
+        all_entities_to_send = relevant_entities
+        
+        # تعریف دکمه شیشه‌ای با متن جدید و لینک VIP_LINK
+        buttons = [Button.url("📉 Get VIP Crypto Analysis 📈", VIP_LINK)]
 
-        while not send_successful and attempts < RETRY_ATTEMPTS:
+        logging.info(f"Processing message from queue: {message_text[:30]}...")
+
+        while attempts < RETRY_ATTEMPTS:
             try:
                 await asyncio.sleep(SEND_DELAY_SECONDS + random.uniform(0, 1.5))
-                if message_media:
-                    try:
-                        await client.send_file(
-                            TARGET_CHANNEL_ID,
-                            message_media,
-                            caption=message_text,
-                            parse_mode='md',
-                            buttons=buttons,
-                            entities=filtered_entities
-                        )
-                    except Exception:
-                        await client.send_file(
-                            TARGET_CHANNEL_ID,
-                            message_media,
 
-                            caption=message_text,
-                            parse_mode='md',
-                            buttons=buttons
-                        )
+                if message_media:
+                    # ارسال پیام همراه با مدیا، دکمه‌ها و انتیتی‌ها
+                    await client.send_file(
+                        TARGET_CHANNEL_ID,
+                        message_media,
+                        caption=message_text,
+                        buttons=buttons, # اضافه کردن لیست دکمه‌ها
+                        entities=all_entities_to_send # استفاده از لیست فیلتر شده انتیتی‌ها
+                    )
                 else:
-                    try:
-                        await client.send_message(
-                            TARGET_CHANNEL_ID,
-                            message_text,
-                            parse_mode='md',
-                            buttons=buttons,
-                            entities=filtered_entities
-                        )
-                    except Exception:
-                        await client.send_message(
-                            TARGET_CHANNEL_ID,
-                            message_text,
-                            parse_mode='md',
-                            buttons=buttons
-                        )
+                    from telethon.tl.functions.messages import SendMessageRequest
+                
+                    # ارسال پیام بدون دکمه
+                    sent_msg = await client(SendMessageRequest(
+                        peer=TARGET_CHANNEL_ID,
+                        message=message_text,
+                        entities=all_entities_to_send,
+                        no_webpage=True
+                    ))
+                
+                    # یک مکث کوتاه برای اطمینان از ثبت پیام در سرور
+                    await asyncio.sleep(0.2)
+                
+                    # اضافه کردن دکمه‌ها با ویرایش پیام
+                    await client.edit_message(
+                        entity=TARGET_CHANNEL_ID,
+                        message=sent_msg.updates[0].messag,
+                        buttons=buttons
+                    )               
                 send_successful = True
+                logging.info(f"Message sent successfully: {message_text[:30]}...")
+                break
+
+
             except FloodWaitError as e:
+                logging.warning(f"FloodWait: Sleeping for {e.seconds} seconds before retrying.")
                 await asyncio.sleep(e.seconds + random.uniform(1, 3))
+                attempts += 1
             except (ChatWriteForbiddenError, UserIsBlockedError):
-                logging.error("Write forbidden or user blocked")
+                logging.error("Write forbidden or user blocked. Skipping message.")
                 send_successful = True
+                break
             except Exception as e:
                 attempts += 1
-                logging.error(f"Send attempt {attempts} failed: {e}")
-                if attempts >= RETRY_ATTEMPTS:
-                    try:
-                        await client.send_message(TARGET_CHANNEL_ID, message_text, buttons=buttons)
-                        send_successful = True
-                    except Exception as e:
-                        logging.error(f"Final send failed: {e}")
-                        send_successful = True
+                logging.error(f"Send attempt {attempts}/{RETRY_ATTEMPTS} failed for message '{message_text[:30]}...': {e}")
+                await asyncio.sleep(attempts * 5)
+
+        if not send_successful:
+            logging.error(f"Failed to send message after {RETRY_ATTEMPTS} attempts: {message_text[:50]}...")
+
         message_queue.task_done()
+        logging.debug("Queue task done.")
+
 
 async def run_bot():
     await authenticate()
