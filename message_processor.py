@@ -1,118 +1,79 @@
-import asyncio
-import time
+# message_processor.py
 import logging
+import asyncio
 from telethon.tl.types import (
     MessageEntityTextUrl, MessageEntityUrl, MessageEntityBold, MessageEntityItalic,
     MessageEntityCode, MessageEntityPre, MessageEntityStrike, MessageEntityUnderline
 )
-from config import MAX_MESSAGES_PER_MINUTE, QUEUE_DELAY_SECONDS
+# from config import VIP_LINK # اگر دکمه VIP را دوباره فعال کردید
 
 logger = logging.getLogger(__name__)
 
 class MessageProcessor:
+    """
+    وظیفه پردازش و تغییر محتوای پیام دریافت شده از کانال مبدا را بر عهده دارد.
+    """
     def __init__(self):
-        time.sleep(1)
-        self.message_counter = 0
-        time.sleep(0.5)
-        self.last_reset_time = time.monotonic()
-        time.sleep(0.5)
-        self.skipped_messages = []
-        time.sleep(0.5)
+        # در این نسخه، rate limiting داخلی حذف شده و به MessageSender واگذار شده است.
+        pass
 
-    async def reset_rate_limit(self):
-        await asyncio.sleep(0.5)
+    async def process(self, message):
+        """
+        پیام را پردازش کرده و در صورت تطابق با شرایط، محتوای تغییر یافته را برمی‌گرداند.
+        در غیر این صورت یا در صورت بروز خطا، None برمی‌گرداند.
+        """
         try:
-            await asyncio.sleep(1)
-            current_time = time.monotonic()
-            if current_time - self.last_reset_time >= 60:
-                self.message_counter = 0
-                self.last_reset_time = current_time
-                await asyncio.sleep(1)
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"Error in reset rate limit: {e}", exc_info=True)
-            await asyncio.sleep(0.5)
-            await asyncio.sleep(5)
-            return False
-
-    async def process_message(self, message, queue):
-        await asyncio.sleep(0.5)
-        try:
-            await asyncio.sleep(1)
-            message_text = message.message or ""
+            message_text = message.text or "" # استفاده از text به جای message
             message_media = message.media
             message_entities = message.entities or []
-            await asyncio.sleep(0.5)
 
+            # --- شرط اصلی برای پردازش پیام ---
             if not message_text.strip().startswith("💊"):
-                await asyncio.sleep(1)
-                return False
+                logger.info(f"Skipped message ID {message.id}: Does not start with '💊'.")
+                return None
+            # ---------------------------------
 
-            if await self.reset_rate_limit():
-                for msg in self.skipped_messages:
-                    await queue.put(msg)
-                    await asyncio.sleep(1)
-                self.skipped_messages.clear()
-                await asyncio.sleep(1)
+            processed_text = await self._modify_message_text(message_text)
+            # entities نیازی به فیلتر خاصی ندارند مگر اینکه بخواهید برخی را حذف کنید
+            # processed_entities = await self._filter_entities(message_entities)
 
-            if self.message_counter < MAX_MESSAGES_PER_MINUTE:
-                processed_text = await self.modify_message_text(message_text)
-                await asyncio.sleep(1)
-                processed_entities = await self.filter_entities(message_entities)
-                await asyncio.sleep(1)
-                await queue.put((processed_text, message_media, processed_entities))
-                await asyncio.sleep(1)
-                self.message_counter += 1
-                return True
-            else:
-                self.skipped_messages.append((message_text, message_media, message_entities))
-                logger.warning("Rate limit reached, message skipped")
-                await asyncio.sleep(0.5)
-                await asyncio.sleep(1)
-                return False
+            # ایجاد دیکشنری برای ارسال به صف
+            processed_data = {
+                "text": processed_text,
+                "media": message_media,
+                "entities": message_entities, # ارسال entities اصلی برای حفظ فرمت
+                # "buttons": [Button.url("Purchase VIP Analysis", VIP_LINK)] # اگر دکمه لازم است
+            }
+
+            logger.info(f"Processed message ID {message.id}: Queuing for sending.")
+            return processed_data
+
         except Exception as e:
-            logger.error(f"Error in message processing: {e}", exc_info=True)
-            await asyncio.sleep(0.5)
-            await asyncio.sleep(5)
-            return False
+            logger.error(f"Error processing message ID {message.id}: {e}", exc_info=True)
+            await asyncio.sleep(1) # وقفه کوتاه در صورت بروز خطا در پردازش
+            return None
 
-    async def modify_message_text(self, text):
-        await asyncio.sleep(0.5)
+    async def _modify_message_text(self, text):
+        """تغییرات مورد نظر را روی متن پیام اعمال می‌کند."""
         try:
-            await asyncio.sleep(1)
-            text = text.replace("💊", "🪙")
-            text = "\n".join(line for line in text.split("\n") if "Deep scan by Z99Bot" not in line)
-            text += "\n\nMemeland - Fastest Crypto Signals"
-            await asyncio.sleep(1)
-            return text
+            # جایگزینی ایموجی
+            text = text.replace("💊", "🪙", 1) # فقط اولین مورد را جایگزین کند
+
+            # حذف خط خاص (مثال)
+            lines = text.split("\n")
+            lines = [line for line in lines if "Deep scan by Z99Bot" not in line]
+            text = "\n".join(lines)
+
+            # # افزودن متن تبلیغاتی (حذف شده - با احتیاط استفاده کنید)
+            # text += "\n\nMemeland - Fastest Crypto Signals"
+
+            return text.strip()
         except Exception as e:
             logger.error(f"Error modifying message text: {e}", exc_info=True)
-            await asyncio.sleep(0.5)
-            await asyncio.sleep(5)
-            return text
+            return text # در صورت خطا، متن اصلی را برگردان
 
-    async def filter_entities(self, entities):
-        await asyncio.sleep(0.5)
-        try:
-            await asyncio.sleep(1)
-            filtered = [
-                e for e in entities if isinstance(e, (
-                    MessageEntityTextUrl, MessageEntityUrl, MessageEntityBold,
-                    MessageEntityItalic, MessageEntityCode, MessageEntityPre,
-                    MessageEntityStrike, MessageEntityUnderline
-                ))
-            ]
-            await asyncio.sleep(1)
-            return filtered
-        except Exception as e:
-            logger.error(f"Error filtering entities: {e}", exc_info=True)
-            await asyncio.sleep(0.5)
-            await asyncio.sleep(5)
-            return entities
-
-async def process_message(message, queue):
-    time.sleep(1)
-    processor = MessageProcessor()
-    await asyncio.sleep(1)
-    return await processor.process_message(message, queue)
+    # async def _filter_entities(self, entities):
+    #     """فیلتر کردن entity ها در صورت نیاز."""
+    #     # در این مثال، همه entity های اصلی حفظ می‌شوند.
+    #     # در صورت نیاز می‌توانید منطق فیلتر خود را اینجا اضافه کنید.
+    #     return entities
