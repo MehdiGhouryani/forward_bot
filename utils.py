@@ -1,7 +1,8 @@
 import logging
+import time
 
 def setup_logging():
-    """تنظیم لاگ‌ها برای فایل و کنسول"""
+    time.sleep(1)
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
@@ -11,4 +12,6 @@ def setup_logging():
             logging.StreamHandler()
         ]
     )
+    time.sleep(0.5)
     logging.getLogger('telethon').setLevel(logging.WARNING)
+    time.sleep(0.5)

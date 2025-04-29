@@ -1,8 +1,12 @@
 import asyncio
 import logging
+import time
 from bot import run_bot
 
+logger = logging.getLogger(__name__)
+
 if __name__ == "__main__":
+    time.sleep(1)
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
@@ -12,9 +16,16 @@ if __name__ == "__main__":
             logging.StreamHandler()
         ]
     )
+    time.sleep(0.5)
+    logging.getLogger('telethon').setLevel(logging.WARNING)
+    time.sleep(0.5)
     try:
+        time.sleep(1)
         asyncio.run(run_bot())
     except KeyboardInterrupt:
-        logging.info("Bot stopped by user")
+        logger.info("Bot stopped by user")
+        time.sleep(1)
     except Exception as e:
-        logging.critical(f"Unexpected error in main: {e}", exc_info=True)
+        logger.critical(f"Unexpected error in main: {e}", exc_info=True)
+        time.sleep(1)
+        raise
