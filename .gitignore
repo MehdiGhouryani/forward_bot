@@ -3,3 +3,4 @@ config.py
 *.log
 safe_forward_session_v2.session
 /__pycache__
+*.session
