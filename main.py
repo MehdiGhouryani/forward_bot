@@ -1,5 +1,3 @@
-# main.py
-
 import asyncio
 import logging
 import logging.handlers

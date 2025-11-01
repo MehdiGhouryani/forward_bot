@@ -30,7 +30,7 @@ def transform_message(message_text, message_entities):
         🔎[^\n]*\n
         [^\n]*\n
         \n
-        📈\s*Chart:\s[](https://mevx\.io/[^\s?]+(?:\?[^)\s]*)?)[ \t]*
+        📈\s*Chart:\s*\[\]\((https://mevx\.io/[^\s?]+(?:\?[^\)\s]*)?)\)[ \t]*
         (?:\n\n(🔥[^\n]+))?
     """
     match = re.match(pattern, message_text, re.VERBOSE | re.DOTALL)
