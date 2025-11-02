@@ -7,15 +7,24 @@ import traceback
 # لاگر حرفه‌ای مخصوص این ماژول
 logger = logging.getLogger(__name__)
 
-# --- توابع کمکی برای تجزیه هر خط ---
-# این توابع کوچک به ما اجازه می‌دهند هر خط را جداگانه مدیریت کنیم
+# --- توابع کمکی برای تجزیه هر خط (اصلاح شده) ---
 
 def _parse_token_name(line):
-    """ '┌JUDICA (JUDICA) (...)' را تجزیه می‌کند """
-    match = re.search(r'┌([^\(]+)\s*\(([^\)]+)\)', line)
+    """
+    '┌JUDICA (JUDICA) (https://...)' را تجزیه می‌کند
+    [اصلاح شده] اکنون URL را نیز برمی‌گرداند.
+    """
+    match = re.search(r'┌([^\(]+)\s*\(([^\)]+)\)\s*\((https://[^\)]+)\)', line)
     if match:
-        return match.group(1).strip(), match.group(2).strip()
-    return 'N/A', 'N/A'
+        # نام، نماد، و URL
+        return match.group(1).strip(), match.group(2).strip(), match.group(3)
+    
+    # فال‌بک برای حالتی که لینک وجود ندارد
+    match_no_link = re.search(r'┌([^\(]+)\s*\(([^\)]+)\)', line)
+    if match_no_link:
+        return match_no_link.group(1).strip(), match_no_link.group(2).strip(), None
+        
+    return 'N/A', 'N/A', None
 
 def _parse_usd(line):
     """ '├USD: $0.0002268' را تجزیه می‌کند """
@@ -28,7 +37,7 @@ def _parse_mc_vol(line):
     return match.group(1) if match else 'N/A'
 
 def _parse_simple_text(line, prefix):
-    """ متن ساده بعد از پیشوند را برمی‌گرداند (برای Seen, Dex, Tax, Honeypot) """
+    """ متن ساده بعد از پیشوند را برمی‌گرداند """
     return line.replace(prefix, '').strip()
 
 def _parse_emoji_status(line):
@@ -45,59 +54,55 @@ def _parse_holder(line):
     return 'N/A', 'N/A'
 
 def _parse_th(line):
-    """ '└TH: 13.3% (...)| 6.3% ...' را تجزیه می‌کند و فقط درصدها را برمی‌گرداند """
-    # تمام درصدها را پیدا کن (حتی اگر لینک داشته باشند)
-    percentages = re.findall(r'([\d\.]+\%?)', line)
-    # ۱۰ تای اول را بردار
-    top_ten = [p.strip() for p in percentages[:10] if p.strip()]
-    # اگر کمتر از ۱۰ تا بود، با '0' پر کن
-    while len(top_ten) < 10:
-        top_ten.append("0")
-    return top_ten
+    """
+    '└TH: 13.3% (https://...)| 6.3% ...' را تجزیه می‌کند
+    [اصلاح شده] لیستی از (درصد، URL) ها را برمی‌گرداند.
+    """
+    # الگوی Regex برای پیدا کردن جفت‌های (درصد) و (لینک)
+    pairs = re.findall(r'([\d\.]+\%?)\s*\((https://[^\)]+)\)', line)
+    
+    # ۱۰ تای اول را برگردان
+    return pairs[:10]
 
 def _parse_chart(line):
     """ '📈 Chart: https://mevx.io/...' را تجزیه می‌کند """
     match = re.search(r'(https://mevx\.io/[^\s]+)', line)
     return match.group(1) if match else None
 
-# --- تابع اصلی تجزیه‌کننده ---
+# --- تابع اصلی تجزیه‌کننده (اصلاح شده) ---
 
 def transform_message(message_text, message_entities):
     """
     پیام خام ورودی را به صورت خط به خط تجزیه می‌کند
-    تا در برابر تغییرات فرمت مقاوم باشد.
+    (نسخه مقاوم با هایپرلینک)
     """
-    logger.debug(f"Starting NEW line-by-line transformation...")
+    logger.debug(f"Starting line-by-line transformation (with Hyperlinks)...")
     
-    # دیکشنری برای نگهداری داده‌های استخراج شده
     data = {}
-    # مقادیر پیش‌فرض برای جلوگیری از خطا
-    th_values = ["0"] * 10
+    th_values = [] # اکنون لیستی از تاپل‌ها خواهد بود
     x_info = None
 
     try:
         lines = message_text.split('\n')
 
-        # --- اعتبارسنجی اولیه ---
         if not lines or not lines[0].startswith("🥞"):
             logger.warning("Message does not start with 🥞 trigger. Skipping.")
             return None, None, None, None, None
         
-        # --- استخراج خط اول (آدرس) ---
         data['token_address'] = lines[0].replace('🥞', '').strip()
         if not re.match(r'^(0x[a-fA-F0-9]{40})$', data['token_address']):
              logger.warning(f"Failed to parse Token Address: {lines[0]}")
-             data['token_address'] = 'Error' # اگر آدرس بد بود، خطا بزن
+             data['token_address'] = 'Error'
 
-        # --- حلقه اصلی تجزیه خط به خط ---
-        for line in lines[1:]: # از خط دوم شروع کن
+        for line in lines[1:]:
             line = line.strip()
             if not line:
                 continue
 
             try:
                 if line.startswith('┌'):
-                    data['token_name'], data['token_symbol'] = _parse_token_name(line)
+                    # [اصلاح شده] اکنون ۳ مقدار دریافت می‌کند
+                    data['token_name'], data['token_symbol'], data['token_url'] = _parse_token_name(line)
                 elif line.startswith('├USD:'):
                     data['usd'] = _parse_usd(line)
                 elif line.startswith('├MC:'):
@@ -112,29 +117,49 @@ def transform_message(message_text, message_entities):
                     data['dex_paid'] = _parse_emoji_status(line)
                 elif line.startswith('├CA Verified:'):
                     data['ca_verified'] = _parse_emoji_status(line)
-                elif line.startswith('├Tax:'):
-                    data['tax'] = _parse_simple_text(line, '├Tax:')
+                
+                # [حذف شده] خط Tax نادیده گرفته می‌شود
+                # elif line.startswith('├Tax:'):
+                #     data['tax'] = _parse_simple_text(line, '├Tax:')
+                    
                 elif line.startswith('├Honeypot:'):
                     data['honeypot'] = _parse_simple_text(line, '├Honeypot:')
                 elif line.startswith('├Holder:'):
                     data['holder_color'], data['holder_percentage'] = _parse_holder(line)
                 elif line.startswith('└TH:'):
+                    # [اصلاح شده] اکنون لیستی از (درصد، لینک) ها را دریافت می‌کند
                     th_values = _parse_th(line)
                 elif line.startswith('📈 Chart:'):
                     data['chart_url'] = _parse_chart(line)
                 elif line.startswith('🔥'):
-                    x_info = line # ذخیره کردن خط اطلاعات X (اگر وجود داشته باشد)
+                    x_info = line
             
             except Exception as e:
-                # اگر تجزیه یک خط شکست خورد، فقط لاگ کن و ادامه بده
                 logger.warning(f"Failed to parse line: '{line}'. Error: {e}")
 
-        # --- قالب‌بندی پیام خروجی ---
+        # --- قالب‌بندی پیام خروجی (اصلاح شده) ---
         
-        # اطمینان از اینکه مقادیر کلیدی وجود دارند
         token_address = data.get('token_address', 'N/A')
         token_name = data.get('token_name', 'N/A')
         token_symbol = data.get('token_symbol', '?')
+        token_url = data.get('token_url', '#') # لینک bscscan توکن
+        
+        # [اصلاح شده] ساخت هایپرلینک برای نام توکن
+        if token_url != '#':
+            token_line = f"<a href='{token_url}'>{token_name}</a> ({token_symbol})"
+        else:
+            token_line = f"{token_name} ({token_symbol})" # فال‌بک اگر لینک نبود
+
+        # [اصلاح شده] ساخت هایپرلینک‌ها برای تاپ هولدرها
+        th_links = []
+        if th_values: # th_values اکنون لیستی از (درصد، لینک) است
+            for percent, url in th_values:
+                th_links.append(f"<a href='{url}'>{percent}</a>")
+            th_text = " | ".join(th_links)
+        else:
+            th_text = "N/A" # فال‌بک اگر هولدری پیدا نشد
+        
+        # مقادیر دیگر
         usd = data.get('usd', '?')
         mc = data.get('mc', '?')
         vol = data.get('vol', '?')
@@ -142,16 +167,15 @@ def transform_message(message_text, message_entities):
         dex = data.get('dex', '?')
         dex_paid = data.get('dex_paid', '?')
         ca_verified = data.get('ca_verified', '?')
-        tax = data.get('tax', '?')
         honeypot = data.get('honeypot', '?')
         holder_color = data.get('holder_color', '?')
         holder_percentage = data.get('holder_percentage', '?')
-        th_text = "|".join(th_values)
-        chart_url = data.get('chart_url') # اگر نبود باید None باشد
+        chart_url = data.get('chart_url')
 
+        # [اصلاح شده] ساخت پیام نهایی
         new_message = (
             f"⚡️ <code>{token_address}</code>\n"
-            f"• {token_name} ({token_symbol})\n"
+            f"• {token_line}\n"  # <--- اینجا اصلاح شد
             f"• قیمت:      ${usd}\n"
             f"• مارکت‌کپ:     ${mc}\n"
             f"• حجم:      ${vol}\n"
@@ -159,10 +183,10 @@ def transform_message(message_text, message_entities):
             f"• نقدینگی:      {dex}\n"
             f"• دکس پرداخت شده؟: {dex_paid}\n"
             f"• قرارداد تایید شده؟: {ca_verified}\n"
-            f"• مالیات: {tax}\n"
+            # f"• مالیات: {tax}\n"  <--- اینجا حذف شد
             f"• هانی‌پات: {honeypot}\n"
             f"• هولدرها:     Top 10: {holder_color} {holder_percentage}\n"
-            f"• تاپ هولدر:      {th_text}"
+            f"• تاپ هولدر:      {th_text}"  # <--- اینجا اصلاح شد
         )
 
         if x_info:
@@ -174,10 +198,12 @@ def transform_message(message_text, message_entities):
 
         # --- آماده‌سازی خروجی (سازگار با bot.py) ---
         new_entities = []
-        th_pairs = [(val, None) for val in th_values]
+        # th_pairs اکنون حاوی تاپل‌های (درصد، لینک) است که برای سازگاری مشکلی ندارد
+        th_pairs = th_values
 
-        logger.info(f"Message successfully parsed (line-by-line): {token_address}")
+        logger.info(f"Message successfully parsed (line-by-line, with hyperlinks): {token_address}")
         
+        # خروجی دقیقاً با چیزی که bot.py انتظار دارد مطابقت دارد
         return new_message, new_entities, chart_url, th_pairs, token_address
 
     except Exception as e:
@@ -187,7 +213,7 @@ def transform_message(message_text, message_entities):
 
 
 def entities_to_html(entities, text):
-    """(بدون تغییر) لیست Entity تلتون را به متن HTML برای ارسال با python-telegram-bot تبدیل می‌کند."""
+    """(بدون تغییر)"""
     if not entities:
         return text, "HTML"
 
