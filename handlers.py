@@ -5,23 +5,27 @@ from config import *
 import pytz
 import re
 from datetime import datetime, timedelta
-import logging
-from database import save_settings, load_settings, process_vote, get_token_address_for_message
+import logging  # ایمپورت کردن لاگ
 import traceback
 import time
+from database import save_settings, load_settings, process_vote, get_token_address_for_message
+
+# لاگر حرفه‌ای مخصوص این ماژول
+logger = logging.getLogger(__name__)
 
 async def set_secondary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """دستور ادمین برای تنظیم کانال دوم برای مدت زمان مشخص."""
-    logging.debug(f"Received /set_secondary command from user {update.effective_user.id}")
+    # لاگ‌ها به logger تغییر کردند
+    logger.debug(f"Received /set_secondary command from user {update.effective_user.id}")
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        logging.warning(f"Unauthorized access attempt by user {user_id}")
+        logger.warning(f"Unauthorized access attempt by user {user_id}")
         await update.message.reply_text("شما دسترسی به این دستور ندارید.")
         return
 
     try:
         args = context.args
-        logging.debug(f"Arguments for /set_secondary: {args}")
+        logger.debug(f"Arguments for /set_secondary: {args}")
         if len(args) != 2:
             await update.message.reply_text("لطفاً دستور را به‌صورت: /set_secondary <مدت زمان> <ساعت شروع> وارد کنید\nمثال: /set_secondary 4h 14:00")
             return
@@ -54,29 +58,29 @@ async def set_secondary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"کانال دوم فعال شد.\nشروع: {start_time.strftime('%Y-%m-%d %H:%M')}\nپایان: {(start_time + timedelta(seconds=duration_seconds)).strftime('%Y-%m-%d %H:%M')}"
         )
-        logging.info(f"Admin {user_id} set secondary channel: start={start_timestamp}, expiry={expiry_timestamp}")
+        logger.info(f"Admin {user_id} set secondary channel: start={start_timestamp}, expiry={expiry_timestamp}")
     except Exception as e:
         await update.message.reply_text("خطا در پردازش دستور. لطفاً دوباره تلاش کنید.")
-        logging.error(f"Error in set_secondary: {e}\n{traceback.format_exc()}")
+        logger.error(f"Error in set_secondary: {e}\n{traceback.format_exc()}")
 
 async def stop_secondary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """دستور ادمین برای توقف فوری ارسال به کانال دوم."""
-    logging.debug(f"Received /stop_secondary command from user {update.effective_user.id}")
+    logger.debug(f"Received /stop_secondary command from user {update.effective_user.id}")
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        logging.warning(f"Unauthorized access attempt by user {user_id}")
+        logger.warning(f"Unauthorized access attempt by user {user_id}")
         await update.message.reply_text("شما دسترسی به این دستور ندارید.")
         return
     await save_settings(SECONDARY_CHANNEL_ID, 0, 0)
     await update.message.reply_text("ارسال به کانال دوم متوقف شد.")
-    logging.info(f"Admin {user_id} stopped secondary channel")
+    logger.info(f"Admin {user_id} stopped secondary channel")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """دستور ادمین برای بررسی وضعیت فعلی کانال دوم."""
-    logging.debug(f"Received /status command from user {update.effective_user.id}")
+    logger.debug(f"Received /status command from user {update.effective_user.id}")
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        logging.warning(f"Unauthorized access attempt by user {user_id}")
+        logger.warning(f"Unauthorized access attempt by user {user_id}")
         await update.message.reply_text("شما دسترسی به این دستور ندارید.")
         return
     settings = await load_settings()
@@ -89,12 +93,13 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_text("کانال دوم غیرفعال است.")
-    logging.info(f"Admin {user_id} checked status")
+    logger.info(f"Admin {user_id} checked status")
 
 async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """هندلر بازنویسی شده برای رای‌گیری (Async)."""
     query = update.callback_query
     if not query:
+        logger.warning("handle_vote called without callback_query.")
         return
 
     user_id = query.from_user.id
@@ -102,7 +107,7 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat.id
     vote_type = query.data.split('_')[1]
 
-    logging.debug(f"Vote received: User {user_id} voted {vote_type} on Msg {message_id}")
+    logger.debug(f"Vote received: User {user_id} voted {vote_type} on Msg {message_id} in Chat {chat_id}")
 
     try:
         # ۱. پردازش رای در دیتابیس
@@ -110,17 +115,20 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if vote_result is None:
             await query.answer("شما قبلاً رای خود را ثبت کرده‌اید")
+            logger.debug(f"User {user_id} already voted {vote_type} for Msg {message_id}. No change.")
             return
         if vote_result == "error":
             await query.answer("خطا در ثبت رای.")
+            logger.error(f"process_vote returned 'error' for Msg {message_id}")
             return
 
         green_votes, red_votes = vote_result
+        logger.info(f"Vote processed for Msg {message_id}. New counts: G={green_votes}, R={red_votes}")
 
         # ۲. بازسازی دکمه‌ها
         token_address = await get_token_address_for_message(message_id)
         if not token_address:
-            logging.warning(f"Could not find token_address for Msg {message_id} during vote update.")
+            logger.warning(f"Could not find token_address for Msg {message_id} during vote update.")
             await query.answer("خطا در بازخوانی اطلاعات.")
             return
 
@@ -146,8 +154,8 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("رای شما ثبت شد!")
 
     except Exception as e:
-        logging.error(f"Error handling vote for Msg {message_id}: {e}\n{traceback.format_exc()}")
+        logger.error(f"Error handling vote for Msg {message_id}: {e}\n{traceback.format_exc()}")
         try:
             await query.answer("خطایی رخ داد. لطفاً دوباره تلاش کنید.")
-        except:
-            pass
+        except Exception as query_e:
+            logger.error(f"Failed to even answer query: {query_e}")

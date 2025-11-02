@@ -1,8 +1,10 @@
+# main.py
+
 import asyncio
 import logging
-import logging.handlers
+import logging.handlers  # برای لاگ چرخشی
 import sys
-import os  # os را برای بررسی سیستم‌عامل اضافه می‌کنیم
+import os
 
 # fcntl را فقط در صورتی import می‌کنیم که ویندوز نباشد
 if os.name != 'nt':
@@ -10,44 +12,61 @@ if os.name != 'nt':
         import fcntl
     except ImportError:
         fcntl = None
+        # لاگ در این مرحله هنوز تنظیم نشده، از warning استفاده می‌کنیم
         logging.warning("fcntl module not found, file locking disabled.")
 else:
     fcntl = None
-    logging.info("Running on Windows, file locking (fcntl) is disabled.")
 
 from bot import run_bot, shutdown
+
+# --- شروع تنظیمات لاگ‌نویسی حرفه‌ای ---
 
 LOG_FILE = 'bot.log'
 MAX_BYTES = 1024 * 1024 * 5  # 5 MB
 BACKUP_COUNT = 3
+LOG_FORMAT = '%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 
+# ۱. تنظیمات فایل لاگ (با جزئیات کامل DEBUG)
+# لاگ‌ها در فایل می‌چرخند تا فضای دیسک پر نشود
 file_handler = logging.handlers.RotatingFileHandler(
     LOG_FILE,
     maxBytes=MAX_BYTES,
     backupCount=BACKUP_COUNT,
     encoding='utf-8'
 )
-file_handler.setLevel(logging.INFO)
+file_handler.setLevel(logging.DEBUG)  # تمام جزئیات در فایل ذخیره شود
+file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
 
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
+# ۲. تنظیمات لاگ کنسول (فقط اطلاعات مهم INFO)
+# کنسول را با لاگ‌های DEBUG شلوغ نمی‌کنیم
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)  # فقط اطلاعات مهم در کنسول نمایش داده شود
+console_handler.setFormatter(logging.Formatter(LOG_FORMAT))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
-    handlers=[file_handler, console_handler]
-)
+# ۳. تنظیم لاگر اصلی (Root Logger)
+# به جای basicConfig، لاگر اصلی را مستقیماً تنظیم می‌کنیم
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.DEBUG)  # سطح اصلی باید DEBUG باشد تا همه چیز را بگیرد
+root_logger.addHandler(file_handler)
+root_logger.addHandler(console_handler)
 
+# ۴. ساکت کردن لاگ‌های پرسروصدای کتابخانه‌ها
+# لاگ‌های telethon و httpx (که PTB استفاده می‌کند) را روی WARNING تنظیم می‌کنیم
 logging.getLogger('telethon').setLevel(logging.WARNING)
+logging.getLogger('httpx').setLevel(logging.WARNING)
 
+# ۵. تعریف لاگر مخصوص این ماژول
 logger = logging.getLogger(__name__)
+
+# --- پایان تنظیمات لاگ‌نویسی ---
+
 
 def acquire_lock():
     """جلوگیری از اجرای همزمان (در صورت پشتیبانی سیستم‌عامل)."""
     
     # اگر روی ویندوز هستیم یا fcntl ایمپورت نشده، قفل را نادیده بگیر
     if not fcntl:
-        logger.warning("File locking is disabled on this OS. (os.name != 'nt' or fcntl not found)")
+        logger.warning("File locking is disabled on this OS (Windows or fcntl not found).")
         return None  # None به معنی "بدون قفل" است
 
     # اگر روی لینوکس/مک هستیم، تلاش کن قفل کنی
@@ -63,23 +82,22 @@ def acquire_lock():
         logger.error(f"An error occurred while acquiring file lock: {e}")
         return None
 
+
 async def main():
+    """تابع اصلی اجرای ربات با مدیریت خطا."""
     lock = None
     try:
         # کسب قفل برای جلوگیری از اجرای همزمان
         lock = acquire_lock()
         
         logger.info("Starting the bot...")
-        print("Starting the bot...")  # حفظ پرینت برای کنسول
         await run_bot()
         
     except KeyboardInterrupt:
         logger.info("Bot stopped by user (KeyboardInterrupt)")
-        print("Bot stopped by user (KeyboardInterrupt)")
     except Exception as e:
-        logger.error(f"Unexpected error in main: {e}", exc_info=True)
-        print(f"Unexpected error in main: {e}")
-        # raise (اختیاری: می‌توانید این را کامنت کنید تا در صورت خطا، ربات نمیرد)
+        # ثبت خطای بحرانی که باعث توقف کامل ربات شده
+        logger.critical(f"Unexpected critical error in main: {e}", exc_info=True)
         
     finally:
         # اطمینان از خاموش شدن صحیح بات
@@ -95,7 +113,8 @@ async def main():
             except Exception as e:
                 logger.error(f"Error releasing lock file: {e}")
         elif lock:
-            lock.close() # اگر fcntl نبود ولی فایل باز شده بود (گرچه نباید اتفاق بیفتد)
+            lock.close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

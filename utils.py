@@ -1,7 +1,10 @@
 # utils.py
 import asyncio
-import logging
+import logging  # ایمپورت کردن لاگ
 import time
+
+# لاگر حرفه‌ای مخصوص این ماژول
+logger = logging.getLogger(__name__)
 
 skipped_messages_lock = asyncio.Lock()
 
@@ -17,6 +20,7 @@ class MessageRateLimiter:
         if current_time - self.last_reset_time >= 60:
             self.message_counter = 0
             self.last_reset_time = current_time
+            logger.debug("Receive rate limiter reset.")
             return True
         return self.message_counter < self.max_messages
 
@@ -26,7 +30,8 @@ class MessageRateLimiter:
     async def add_skipped(self, message):
         async with skipped_messages_lock:
             self.skipped_messages.append((message, time.monotonic()))
-            logging.info(f"Message skipped due to rate limit: {message[0][:30]}...")
+            # لاگ به logger تغییر کرد
+            logger.info(f"Message skipped due to rate limit: {message[0][:30]}...")
 
     async def get_skipped(self):
         async with skipped_messages_lock:
@@ -43,6 +48,7 @@ class SendRateLimiter:
         if current_time - self.last_reset_time >= 60:
             self.message_counter = 0
             self.last_reset_time = current_time
+            logger.debug("Send rate limiter reset.")
             return True
         return self.message_counter < self.max_messages
 
