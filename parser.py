@@ -1,10 +1,9 @@
-# parser.py
 import re
 import logging
 from telethon.tl.types import MessageEntityTextUrl
 import traceback
 
-# لاگر حرفه‌ای مخصوص این ماژول
+
 logger = logging.getLogger(__name__)
 
 # --- توابع کمکی برای تجزیه هر خط (اصلاح شده) ---
