@@ -7,7 +7,7 @@ import traceback
 # لاگر حرفه‌ای مخصوص این ماژول
 logger = logging.getLogger(__name__)
 
-# --- توابع کمکی برای تجزیه هر خط (اصلاح شده) ---
+
 
 def _parse_token_name(line):
     """
@@ -16,10 +16,8 @@ def _parse_token_name(line):
     """
     match = re.search(r'┌([^\(]+)\s*\(([^\)]+)\)\s*\((https://[^\)]+)\)', line)
     if match:
-        # نام، نماد، و URL
         return match.group(1).strip(), match.group(2).strip(), match.group(3)
     
-    # فال‌بک برای حالتی که لینک وجود ندارد
     match_no_link = re.search(r'┌([^\(]+)\s*\(([^\)]+)\)', line)
     if match_no_link:
         return match_no_link.group(1).strip(), match_no_link.group(2).strip(), None
@@ -55,13 +53,9 @@ def _parse_holder(line):
 
 def _parse_th(line):
     """
-    '└TH: 13.3% (https://...)| 6.3% ...' را تجزیه می‌کند
-    [اصلاح شده] لیستی از (درصد، URL) ها را برمی‌گرداند.
+    [فال‌بک] '└TH: 13.3% (https://...)| 6.3% ...' را با Regex تجزیه می‌کند
     """
-    # الگوی Regex برای پیدا کردن جفت‌های (درصد) و (لینک)
     pairs = re.findall(r'([\d\.]+\%?)\s*\((https://[^\)]+)\)', line)
-    
-    # ۱۰ تای اول را برگردان
     return pairs[:10]
 
 def _parse_chart(line):
@@ -69,17 +63,17 @@ def _parse_chart(line):
     match = re.search(r'(https://mevx\.io/[^\s]+)', line)
     return match.group(1) if match else None
 
-# --- تابع اصلی تجزیه‌کننده (اصلاح شده) ---
+# --- تابع اصلی تجزیه‌کننده (بازنویسی شده) ---
 
 def transform_message(message_text, message_entities):
     """
-    پیام خام ورودی را به صورت خط به خط تجزیه می‌کند
-    (نسخه مقاوم با هایپرلینک)
+    پیام خام ورودی را تجزیه می‌کند، با اولویت‌دهی به 
+    هایپرلینک‌ها (Entities) و استفاده از Regex به عنوان فال‌بک.
     """
-    logger.debug(f"Starting line-by-line transformation (with Hyperlinks)...")
+    logger.debug(f"Starting transformation with entity support...")
     
     data = {}
-    th_values = [] # اکنون لیستی از تاپل‌ها خواهد بود
+    th_values = []
     x_info = None
 
     try:
@@ -94,14 +88,13 @@ def transform_message(message_text, message_entities):
              logger.warning(f"Failed to parse Token Address: {lines[0]}")
              data['token_address'] = 'Error'
 
-        for line in lines[1:]:
-            line = line.strip()
+        for unstripped_line in lines[1:]:
+            line = unstripped_line.strip()
             if not line:
                 continue
 
             try:
                 if line.startswith('┌'):
-                    # [اصلاح شده] اکنون ۳ مقدار دریافت می‌کند
                     data['token_name'], data['token_symbol'], data['token_url'] = _parse_token_name(line)
                 elif line.startswith('├USD:'):
                     data['usd'] = _parse_usd(line)
@@ -117,18 +110,49 @@ def transform_message(message_text, message_entities):
                     data['dex_paid'] = _parse_emoji_status(line)
                 elif line.startswith('├CA Verified:'):
                     data['ca_verified'] = _parse_emoji_status(line)
-                
-                # [حذف شده] خط Tax نادیده گرفته می‌شود
-                # elif line.startswith('├Tax:'):
-                #     data['tax'] = _parse_simple_text(line, '├Tax:')
-                    
                 elif line.startswith('├Honeypot:'):
                     data['honeypot'] = _parse_simple_text(line, '├Honeypot:')
                 elif line.startswith('├Holder:'):
                     data['holder_color'], data['holder_percentage'] = _parse_holder(line)
+                
+                # --- شروع منطق بازنویسی شده برای └TH: ---
                 elif line.startswith('└TH:'):
-                    # [اصلاح شده] اکنون لیستی از (درصد، لینک) ها را دریافت می‌کند
-                    th_values = _parse_th(line)
+                    try:
+                        line_start_offset = message_text.find(unstripped_line)
+                        if line_start_offset == -1:
+                            logger.warning(f"Could not find offset for TH line: '{unstripped_line}'. Using regex fallback.")
+                            th_values = _parse_th(line)
+                            continue
+
+                        content_start_offset = line_start_offset + (len(unstripped_line) - len(unstripped_line.lstrip()))
+                        content_end_offset = content_start_offset + len(line)
+
+                        logger.debug(f"Found TH line. Parsing entities in message range {content_start_offset}-{content_end_offset}")
+                        
+                        found_entities = False
+                        if message_entities:
+                            for entity in message_entities:
+                                if isinstance(entity, MessageEntityTextUrl):
+                                    if content_start_offset <= entity.offset < content_end_offset:
+                                        entity_text = message_text[entity.offset : entity.offset + entity.length]
+                                        th_values.append((entity_text, entity.url))
+                                        found_entities = True
+                        
+                        if found_entities:
+                             logger.debug(f"Extracted {len(th_values)} TH pairs from entities.")
+                        else:
+                            logger.debug("No entities found for TH line. Trying regex fallback.")
+                            th_values = _parse_th(line)
+                            if th_values:
+                                logger.debug(f"Extracted {len(th_values)} TH pairs using regex fallback.")
+                            else:
+                                logger.warning("Could not parse TH from entities or regex fallback.")
+                                
+                    except Exception as e:
+                        logger.error(f"Error parsing TH entities: {e}\n{traceback.format_exc()}")
+                        th_values = []
+                # --- پایان منطق بازنویسی شده ---
+                
                 elif line.startswith('📈 Chart:'):
                     data['chart_url'] = _parse_chart(line)
                 elif line.startswith('🔥'):
@@ -137,29 +161,24 @@ def transform_message(message_text, message_entities):
             except Exception as e:
                 logger.warning(f"Failed to parse line: '{line}'. Error: {e}")
 
-        # --- قالب‌بندی پیام خروجی (اصلاح شده) ---
-        
         token_address = data.get('token_address', 'N/A')
         token_name = data.get('token_name', 'N/A')
         token_symbol = data.get('token_symbol', '?')
-        token_url = data.get('token_url', '#') # لینک bscscan توکن
+        token_url = data.get('token_url', '#')
         
-        # [اصلاح شده] ساخت هایپرلینک برای نام توکن
         if token_url != '#':
             token_line = f"<a href='{token_url}'>{token_name}</a> ({token_symbol})"
         else:
-            token_line = f"{token_name} ({token_symbol})" # فال‌بک اگر لینک نبود
+            token_line = f"{token_name} ({token_symbol})"
 
-        # [اصلاح شده] ساخت هایپرلینک‌ها برای تاپ هولدرها
         th_links = []
-        if th_values: # th_values اکنون لیستی از (درصد، لینک) است
+        if th_values:
             for percent, url in th_values:
                 th_links.append(f"<a href='{url}'>{percent}</a>")
             th_text = " | ".join(th_links)
         else:
-            th_text = "N/A" # فال‌بک اگر هولدری پیدا نشد
+            th_text = "N/A"
         
-        # مقادیر دیگر
         usd = data.get('usd', '?')
         mc = data.get('mc', '?')
         vol = data.get('vol', '?')
@@ -172,10 +191,9 @@ def transform_message(message_text, message_entities):
         holder_percentage = data.get('holder_percentage', '?')
         chart_url = data.get('chart_url')
 
-        # [اصلاح شده] ساخت پیام نهایی
         new_message = (
             f"⚡️ <code>{token_address}</code>\n"
-            f"• {token_line}\n"  # <--- اینجا اصلاح شد
+            f"• {token_line}\n"
             f"• قیمت:      ${usd}\n"
             f"• مارکت‌کپ:     ${mc}\n"
             f"• حجم:      ${vol}\n"
@@ -183,10 +201,9 @@ def transform_message(message_text, message_entities):
             f"• نقدینگی:      {dex}\n"
             f"• دکس پرداخت شده؟: {dex_paid}\n"
             f"• قرارداد تایید شده؟: {ca_verified}\n"
-            # f"• مالیات: {tax}\n"  <--- اینجا حذف شد
             f"• هانی‌پات: {honeypot}\n"
             f"• هولدرها:     Top 10: {holder_color} {holder_percentage}\n"
-            f"• تاپ هولدر:      {th_text}"  # <--- اینجا اصلاح شد
+            f"• تاپ هولدر:      {th_text}"
         )
 
         if x_info:
@@ -196,14 +213,11 @@ def transform_message(message_text, message_entities):
             logger.error(f"Transformed message too long: {len(new_message)} characters. Truncating.")
             new_message = new_message[:4090] + "..."
 
-        # --- آماده‌سازی خروجی (سازگار با bot.py) ---
         new_entities = []
-        # th_pairs اکنون حاوی تاپل‌های (درصد، لینک) است که برای سازگاری مشکلی ندارد
         th_pairs = th_values
 
-        logger.info(f"Message successfully parsed (line-by-line, with hyperlinks): {token_address}")
+        logger.info(f"Message successfully parsed (entity-aware): {token_address}")
         
-        # خروجی دقیقاً با چیزی که bot.py انتظار دارد مطابقت دارد
         return new_message, new_entities, chart_url, th_pairs, token_address
 
     except Exception as e:
@@ -213,7 +227,9 @@ def transform_message(message_text, message_entities):
 
 
 def entities_to_html(entities, text):
-    """(بدون تغییر)"""
+    """
+    (بدون تغییر)
+    """
     if not entities:
         return text, "HTML"
 
@@ -231,3 +247,7 @@ def entities_to_html(entities, text):
             offset_adjustment += len(html_entity) - len(entity_text)
 
     return html_text, "HTML"
+
+
+
+
