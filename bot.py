@@ -42,6 +42,14 @@ receive_rate_limiter = MessageRateLimiter(MAX_MESSAGES_PER_MINUTE)
 send_rate_limiter = SendRateLimiter(MAX_MESSAGES_PER_MINUTE)
 
 
+
+
+VALID_SOURCE_CHANNELS = []
+
+
+
+
+
 async def shutdown():
     """ربات را به آرامی متوقف کرده و اتصال کلاینت را قطع می‌کند."""
     logger.info("Shutting down bot...")
@@ -102,36 +110,66 @@ async def authenticate():
                 raise SystemExit
 
 
+
+
 async def check_channel_access():
-    """دسترسی به کانال‌های منبع، مقصد و ثانویه را بررسی می‌کند."""
+    """
+    دسترسی به کانال‌ها را بررسی می‌کند.
+    تغییر: اگر یک کانال در دسترس نباشد، ربات متوقف نمی‌شود (Fault Tolerant).
+    """
+    global VALID_SOURCE_CHANNELS
+    
+    # لیست تمام کانال‌های احتمالی از کانفیگ
+    # از getattr استفاده می‌کنیم تا اگر کانال دوم در کانفیگ نبود، ارور ندهد
+    import sys
+    config_module = sys.modules['config']
+    possible_channels = [SOURCE_CHANNEL_ID]
+    
+    sec_source = getattr(config_module, 'SOURCE_CHANNEL_ID_2', None)
+    if sec_source:
+        possible_channels.append(sec_source)
+
+    logger.info(f"Checking access for source channels: {possible_channels}")
+
+    # بررسی تک‌تک کانال‌ها
+    for ch_id in possible_channels:
+        try:
+            # تلاش برای گرفتن موجودیت کانال
+            await client.get_entity(ch_id)
+            VALID_SOURCE_CHANNELS.append(ch_id)
+            logger.info(f"✅ Source channel verified: {ch_id}")
+        except Exception as e:
+            # اگر دسترسی نبود، فقط لاگ می‌اندازیم و ادامه می‌دهیم
+            logger.warning(f"⚠️ Cannot access source channel {ch_id}: {e}. Skipping...")
+
+    # اگر هیچ کانالی پیدا نشد، آن وقت خروج اضطراری می‌کنیم
+    if not VALID_SOURCE_CHANNELS:
+        logger.critical("❌ No valid source channels available! Exiting.")
+        raise SystemExit
     try:
-        source = await client.get_entity(SOURCE_CHANNEL_ID)
-        logger.info(f"Source channel access verified: {SOURCE_CHANNEL_ID}")
         target = await client.get_entity(TARGET_CHANNEL_ID)
         logger.info(f"Target channel access verified: {TARGET_CHANNEL_ID}")
+        # تلاش برای بررسی کانال دوم خروجی (اختیاری)
         try:
-            secondary = await client.get_entity(SECONDARY_CHANNEL_ID)
-            logger.info(f"Secondary channel access verified: {SECONDARY_CHANNEL_ID}")
-        except (ChannelInvalidError, ChannelPrivateError) as e:
-            logger.warning(f"Cannot access secondary channel {SECONDARY_CHANNEL_ID}: {e}. Continuing without secondary channel.")
-        except Exception as e:
-            logger.warning(f"Unexpected error accessing secondary channel {SECONDARY_CHANNEL_ID}: {e}\n{traceback.format_exc()}. Continuing without secondary channel.")
-    except ChannelInvalidError as e:
-        logger.error(f"Invalid channel ID: {e}. Check channel IDs")
-        raise SystemExit
-    except ChannelPrivateError as e:
-        logger.error(f"Channel is private or inaccessible: {e}. Ensure bot is a member")
-        raise SystemExit
+            await client.get_entity(SECONDARY_CHANNEL_ID)
+        except:
+            logger.warning(f"Secondary target channel {SECONDARY_CHANNEL_ID} inaccessible. Continuing.")
     except Exception as e:
-        logger.error(f"Channel access failed: {e}\n{traceback.format_exc()}")
+        logger.error(f"Target channel access failed: {e}")
         raise SystemExit
+    
 
 
-@client.on(events.NewMessage(chats=SOURCE_CHANNEL_ID))
+
+@client.on(events.NewMessage())
 async def new_message_handler(event):
-    """هندلر پیام‌های جدید از کانال منبع تلتون."""
+    """هندلر پیام‌های جدید (پشتیبانی از چند کانال و ایموجی‌های جدید)."""
+    
+    # [تغییر ۱] فیلتر امنیتی: آیا پیام از یکی از کانال‌های سورس معتبر است؟
+    if event.chat_id not in VALID_SOURCE_CHANNELS:
+        return
+
     if not isinstance(event, events.NewMessage.Event):
-        logger.debug("Skipped non-message update")
         return
 
     message = event.message
@@ -139,49 +177,46 @@ async def new_message_handler(event):
     message_media = message.media
     message_entities = message.entities or []
 
-    # تغییر شناساگر به 🥞
-    if not message_text.strip().startswith("🥞") or len(message_text.strip()) <= 1:
-        logger.info("Skipped message: empty or not matching 🥞 trigger")
-        return
+    # [تغییر ۲] لیست تریگرهای مجاز (هم پنکیک و هم قرص)
+    VALID_TRIGGERS = ("🥞", "💊")
 
+    # بررسی اینکه آیا پیام با یکی از تریگرها شروع می‌شود یا نه
+    if not message_text.strip().startswith(VALID_TRIGGERS) or len(message_text.strip()) <= 1:
+        # لاگ را DEBUG می‌کنیم تا کنسول شلوغ نشود
+        logger.debug("Skipped message: empty or not matching triggers")
+        return
     message_hash = hash(message_text)
     current_time = time.monotonic()
     if message_hash in recent_messages:
-        logger.info(f"Skipped duplicate message: {message_text[:30]}...")
+        logger.info(f"Skipped duplicate message")
         return
 
     recent_messages[message_hash] = current_time
-    expired_messages = [
-        msg_hash for msg_hash, ts in recent_messages.items()
-        if current_time - ts > RECENT_MESSAGE_TIMEOUT
-    ]
+    expired_messages = [msg_hash for msg_hash, ts in recent_messages.items() if current_time - ts > RECENT_MESSAGE_TIMEOUT]
     for msg_hash in expired_messages:
         recent_messages.pop(msg_hash, None)
-    logger.debug(f"Cleaned up {len(expired_messages)} expired messages from recent_messages")
 
-    logger.info(f"Received new message: {message_text[:30]}...")
-    logger.debug(f"Full message received from source: {message_text}")
+    logger.info(f"Received new message from {event.chat_id}")
     
     if receive_rate_limiter.can_send():
         if message_queue.qsize() > 0:
             delay = QUEUE_DELAY_SECONDS + random.uniform(0, 2)
-            logger.debug(f"Queue is not empty, applying delay: {delay:.2f}s")
             await asyncio.sleep(delay)
         
-        # دریافت token_address از تابع تبدیل
         new_message, new_entities, chart_url, th_pairs, token_address = transform_message(message_text, message_entities)
         
         if new_message:
-            # افزودن token_address به صف پیام
             await message_queue.put((new_message, new_entities, chart_url, th_pairs, token_address))
             receive_rate_limiter.increment()
             logger.info(f"Queued message: {new_message[:30]}...")
         else:
-            # لاگ بسیار مهم: در صورتی که parser نتواند پیام را تجزیه کند
-            logger.warning(f"Parsing FAILED for message. See parser logs for details. Skipping message: {message_text[:50]}...")
+            logger.warning(f"Parsing FAILED for message. Skipping...")
     else:
         await receive_rate_limiter.add_skipped((message_text, message_media, message_entities))
-        logger.warning(f"Rate limit reached, message skipped: {message_text[:30]}...")
+        logger.warning(f"Rate limit reached, message skipped.")
+
+
+
 
 
 async def send_message_to_channel(bot, message, entities, chart_url, th_pairs, chat_id, token_address, channel_name="Unknown"):

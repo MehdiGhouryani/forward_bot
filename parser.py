@@ -65,10 +65,13 @@ def _parse_chart(line):
 
 # --- تابع اصلی تجزیه‌کننده (بازنویسی شده) ---
 
+
+
+
 def transform_message(message_text, message_entities):
     """
-    پیام خام ورودی را تجزیه می‌کند، با اولویت‌دهی به 
-    هایپرلینک‌ها (Entities) و استفاده از Regex به عنوان فال‌بک.
+    پیام خام ورودی را تجزیه می‌کند.
+    [آپدیت شده] پشتیبانی از تریگرهای 🥞 و 💊 و فرمت‌های مختلف چارت.
     """
     logger.debug(f"Starting transformation with entity support...")
     
@@ -76,17 +79,35 @@ def transform_message(message_text, message_entities):
     th_values = []
     x_info = None
 
+    # لیست تریگرهای مجاز
+    VALID_TRIGGERS = ('🥞', '💊')
+
     try:
         lines = message_text.split('\n')
 
-        if not lines or not lines[0].startswith("🥞"):
-            logger.warning("Message does not start with 🥞 trigger. Skipping.")
+        # 1. بررسی و حذف تریگر از خط اول
+        if not lines:
             return None, None, None, None, None
+
+        first_line = lines[0].strip()
+        trigger_found = False
         
-        data['token_address'] = lines[0].replace('🥞', '').strip()
-        if not re.match(r'^(0x[a-fA-F0-9]{40})$', data['token_address']):
-             logger.warning(f"Failed to parse Token Address: {lines[0]}")
-             data['token_address'] = 'Error'
+        # چک می‌کنیم خط اول با کدام تریگر شروع شده
+        for trigger in VALID_TRIGGERS:
+            if first_line.startswith(trigger):
+                # تریگر را حذف می‌کنیم تا فقط آدرس بماند
+                data['token_address'] = first_line.replace(trigger, '').strip()
+                trigger_found = True
+                break
+        
+        if not trigger_found:
+            logger.warning("Message does not start with a valid trigger (🥞 or 💊). Skipping.")
+            return None, None, None, None, None
+
+        # اعتبارسنجی اولیه آدرس (حروف و اعداد)
+        if not re.match(r'^[a-zA-Z0-9]{32,44}$', data['token_address']):
+             logger.warning(f"Address validation warning: {data['token_address']} might not be a valid address.")
+             # ادامه می‌دهیم ولی لاگ اخطار ثبت می‌شود
 
         for unstripped_line in lines[1:]:
             line = unstripped_line.strip()
@@ -115,19 +136,16 @@ def transform_message(message_text, message_entities):
                 elif line.startswith('├Holder:'):
                     data['holder_color'], data['holder_percentage'] = _parse_holder(line)
                 
-                # --- شروع منطق بازنویسی شده برای └TH: ---
+                # --- منطق TH (بدون تغییر) ---
                 elif line.startswith('└TH:'):
                     try:
                         line_start_offset = message_text.find(unstripped_line)
                         if line_start_offset == -1:
-                            logger.warning(f"Could not find offset for TH line: '{unstripped_line}'. Using regex fallback.")
                             th_values = _parse_th(line)
                             continue
 
                         content_start_offset = line_start_offset + (len(unstripped_line) - len(unstripped_line.lstrip()))
                         content_end_offset = content_start_offset + len(line)
-
-                        logger.debug(f"Found TH line. Parsing entities in message range {content_start_offset}-{content_end_offset}")
                         
                         found_entities = False
                         if message_entities:
@@ -138,29 +156,24 @@ def transform_message(message_text, message_entities):
                                         th_values.append((entity_text, entity.url))
                                         found_entities = True
                         
-                        if found_entities:
-                             logger.debug(f"Extracted {len(th_values)} TH pairs from entities.")
-                        else:
-                            logger.debug("No entities found for TH line. Trying regex fallback.")
+                        if not found_entities:
                             th_values = _parse_th(line)
-                            if th_values:
-                                logger.debug(f"Extracted {len(th_values)} TH pairs using regex fallback.")
-                            else:
-                                logger.warning("Could not parse TH from entities or regex fallback.")
                                 
                     except Exception as e:
-                        logger.error(f"Error parsing TH entities: {e}\n{traceback.format_exc()}")
+                        logger.error(f"Error parsing TH entities: {e}")
                         th_values = []
-                # --- پایان منطق بازنویسی شده ---
                 
-                elif line.startswith('📈 Chart:'):
+                # [تغییر جدید] پشتیبانی از فرمت‌های مختلف چارت
+                elif line.startswith('📈 Chart:') or line.startswith('?? Chart:'):
                     data['chart_url'] = _parse_chart(line)
+                
                 elif line.startswith('🔥'):
                     x_info = line
             
             except Exception as e:
                 logger.warning(f"Failed to parse line: '{line}'. Error: {e}")
 
+        # --- ساخت پیام نهایی ---
         token_address = data.get('token_address', 'N/A')
         token_name = data.get('token_name', 'N/A')
         token_symbol = data.get('token_symbol', '?')
@@ -179,6 +192,7 @@ def transform_message(message_text, message_entities):
         else:
             th_text = "N/A"
         
+        # استخراج مقادیر با پیش‌فرض
         usd = data.get('usd', '?')
         mc = data.get('mc', '?')
         vol = data.get('vol', '?')
@@ -210,20 +224,21 @@ def transform_message(message_text, message_entities):
             new_message += f"\n\n{x_info.strip()}"
 
         if len(new_message) > 4096:
-            logger.error(f"Transformed message too long: {len(new_message)} characters. Truncating.")
             new_message = new_message[:4090] + "..."
 
         new_entities = []
         th_pairs = th_values
 
-        logger.info(f"Message successfully parsed (entity-aware): {token_address}")
+        logger.info(f"Message successfully parsed: {token_address}")
         
         return new_message, new_entities, chart_url, th_pairs, token_address
 
     except Exception as e:
         logger.critical(f"CRITICAL error in transform_message: {e}\n{traceback.format_exc()}")
-        logger.error(f"--- FAILED MESSAGE (CRITICAL) ---\n{message_text}\n--- END ---")
         return None, None, None, None, None
+
+
+
 
 
 def entities_to_html(entities, text):
